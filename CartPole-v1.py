@@ -1,10 +1,33 @@
 import argparse
 import sys
+import random
 
 import gym
 from gym import wrappers, logger
 
 import matplotlib.pyplot as plt
+
+class Interaction:
+    def __init__(self,e,a,s,r,f):
+        self.e = e
+        self.a = a
+        self.s = s
+        self.r = r
+        self.f = f
+class Buffer:
+    def __init__(self, taille):
+        self.taille = taille
+        self.buff = []
+    def append(self, inter):
+        if len(self.buff)>=self.taille:
+            self.buff.pop(0)
+        self.buff.append(inter)
+    def length(self):
+        return len(self.buff)
+    def sample(self, k):
+        if k>len(self.buff):
+            k = len(self.buff)
+        return random.sample(self.buff, k)
 
 class RandomAgent(object):
     def __init__(self, action_space):
@@ -38,23 +61,27 @@ if __name__ == '__main__':
     done = False
     
     reward_sums = []
-    steps = []
+
+    er_buffer = Buffer(1000)
+
     fig_rewards = plt.figure()
     for i in range(episode_count):
         ob = env.reset()
         reward_sum = 0
-        step = 0
         while True:
+            etat = ob
             action = agent.act(ob, reward, done)
             ob, reward, done, _ = env.step(action)
             reward_sum += reward
+            inter = Interaction(etat, action, ob, reward, done)
+            er_buffer.append(inter)
+            print(len(er_buffer.sample(10)))
             if done:
                 break
             # Note there's no env.render() here. But the environment still can open window and
             # render if asked by env.monitor: it calls env.render('rgb_array') to record video.
             # Video is not recorded every episode, see capped_cubic_video_schedule for details.
         reward_sums.append(reward_sum)
-        steps.append(step)
     fig_rewards.suptitle('Récompense cumumée par épisode', fontsize=11)
     plt.xlabel('Episode N°', fontsize=9) 
     plt.ylabel('Récompense cumulée', fontsize=9)
