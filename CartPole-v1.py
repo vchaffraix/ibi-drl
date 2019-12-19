@@ -1,11 +1,25 @@
 import argparse
 import sys
 import random
+import torch
+import torch.nn.functional as F
 
 import gym
 from gym import wrappers, logger
 
 import matplotlib.pyplot as plt
+
+
+class Qnn(torch.nn.Module):
+    def __init__(self, e_size, a_size):
+        super(Qnn, self).__init__()
+        self.c1 = torch.nn.Linear(e_size, 10)
+        self.c2 = torch.nn.Linear(10, a_size)
+    def forward(self, e):
+        x = self.c1(e)
+        x = F.relu(x)
+        x = self.c2(x)
+        return torch.sigmoid(x)
 
 class Interaction:
     def __init__(self,e,a,s,r,f):
@@ -28,13 +42,72 @@ class Buffer:
         if k>len(self.buff):
             k = len(self.buff)
         return random.sample(self.buff, k)
-
 class RandomAgent(object):
     def __init__(self, action_space):
         self.action_space = action_space
 
     def act(self, observation, reward, done):
         return self.action_space.sample()
+
+class DQN_Agent(object):
+    def __init__(self, env, buffer_size):
+        n_action = env.action_space.n
+        n_input = env.observation_space.shape[0]
+        # NEURAL NETWORK
+        self.net = Qnn(n_input, n_action)
+        self.optimizer = torch.optim.SGD(self.net.parameters(), lr=0.00001)
+        self.buff = Buffer(buffer_size)
+        self.reward_sum = 0
+        self.env = env
+        self.tau = 0.4
+        self.gamma = 0.9
+    def act(self, Q):
+        tirage = random.random()
+        sum_ = 0
+        den_ = torch.exp(Q / self.tau).sum()
+        for i in range(Q.shape[0]):
+            sum_ += torch.exp(Q[i]/self.tau) / den_
+            if(sum_>=tirage):
+                break
+        return i
+
+    def reset(self):
+        self.reward_sum = 0
+        self.ob = self.env.reset()
+
+    def step(self):
+        etat_ = self.ob
+        x = torch.Tensor(etat_)
+        y = self.net.forward(x)
+        
+        action = self.act(y)
+        self.ob, reward, self.done, _ = self.env.step(action)
+
+        self.reward_sum += reward
+
+        inter = Interaction(etat_, action, self.ob, reward, self.done)
+        self.buff.append(inter)
+
+
+    def learn(self):
+        batch = self.buff.sample(10)
+        for exp in batch:
+            if(exp.f):
+                e = torch.Tensor(exp.e)
+                s = torch.Tensor(exp.s)
+                Q = self.net.forward(e)[exp.a]
+                Qc = self.net.forward(s)
+                loss = (Q - (exp.r + self.gamma * Qc.max())) ** 2
+                loss.backward()
+                self.optimizer.step()
+            else:
+                e = torch.Tensor(exp.e)
+                Q = self.net.forward(e)[exp.a]
+                loss = (Q - exp.r) ** 2
+                loss.backward()
+                self.optimizer.step()
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=None)
@@ -56,32 +129,33 @@ if __name__ == '__main__':
     env.seed(0)
     agent = RandomAgent(env.action_space)
 
+    agent2 = DQN_Agent(env, 100000)
+
     episode_count = 100
+    epoch = 10
+
     reward = 0
     done = False
     
     reward_sums = []
 
-    er_buffer = Buffer(1000)
-
     fig_rewards = plt.figure()
     for i in range(episode_count):
-        ob = env.reset()
-        reward_sum = 0
+        agent2.reset()
         while True:
-            etat = ob
-            action = agent.act(ob, reward, done)
-            ob, reward, done, _ = env.step(action)
-            reward_sum += reward
-            inter = Interaction(etat, action, ob, reward, done)
-            er_buffer.append(inter)
-            print(len(er_buffer.sample(10)))
-            if done:
+            agent2.step()
+            agent2.learn()
+            if agent2.done:
                 break
             # Note there's no env.render() here. But the environment still can open window and
             # render if asked by env.monitor: it calls env.render('rgb_array') to record video.
             # Video is not recorded every episode, see capped_cubic_video_schedule for details.
-        reward_sums.append(reward_sum)
+        reward_sums.append(agent2.reward_sum)
+    epochs_rec = []
+    for i in range(0, len(reward_sums), epoch):
+        mn = reward_sums[i:i+epoch]
+        epochs_rec.append(sum(mn)/len(mn))
+
     fig_rewards.suptitle('Récompense cumumée par épisode', fontsize=11)
     plt.xlabel('Episode N°', fontsize=9) 
     plt.ylabel('Récompense cumulée', fontsize=9)
