@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import copy
 import time
 import numpy as np
-#from PIL import Image
+from PIL import Image
 
 import gym
 from gym import wrappers, logger
@@ -74,21 +74,31 @@ class RandomAgent(object):
 class QModel(torch.nn.Module):
     def __init__(self, e_size, a_size):
         super(QModel, self).__init__()
-        self.c1 = torch.nn.Linear(e_size, 32)
-        self.c2 = torch.nn.Linear(32, 32)
-        self.c3 = torch.nn.Linear(32, 32)
-        self.c4 = torch.nn.Linear(32, a_size)
-        # self.c4 = torch.nn.Linear(16, a_size)
-        # self.c4 = torch.nn.Linear(128, a_size)
-    def forward(self, e):
-        x = self.c1(e)
-        x = torch.relu(x)
-        x = self.c2(x)
-        x = torch.relu(x)
-        x = self.c3(x)
-        x = torch.relu(x)
-        x = self.c4(x)
-        return x
+
+        # Channel d'entrée = 1
+        # Sorties de la couche = 14
+        self.conv1 = torch.nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.fc1 = torch.nn.Linear(3136, 512)
+        self.fc2 = torch.nn.Linear(512, a_size)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = torch.tanh(x)
+        #x = F.max_pool2d(x, 2)
+        x = self.conv2(x)
+        x = torch.tanh(x)
+        #x = F.max_pool2d(x, 2)
+        x = self.conv3(x)
+        x = F.relu(x)
+        #x = F.max_pool2d(x, 2)
+        x = torch.flatten(x, 1)
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        output = x.flatten()
+        return output
 
 class DQN_Agent(object):
     def __init__(self, env, buffer_size=100000):
@@ -100,6 +110,7 @@ class DQN_Agent(object):
         self.exploration = "greedy"
         self.sigma = 1e-3
         self.alpha = 0.01
+        self.m = 4
 
         n_action = env.action_space.n
         n_input = env.observation_space.shape[0]
@@ -124,7 +135,6 @@ class DQN_Agent(object):
     def act(self, Q):
         tirage = random.random()
         self.tau = self.min_tau + (self.tau-self.min_tau)*self.tau_decay
-
         if(self.exploration=="greedy"):
             if(tirage>=self.tau):
                 return Q.max(0)[1].item()
@@ -145,31 +155,59 @@ class DQN_Agent(object):
     # on remet la récompense cumulée à 0 et on reset l'env
     def reset(self):
         self.reward_sum = 0
+        self.reward_etat = 0
         self.ob = self.env.reset()
+        self.action = self.env.action_space.sample()
+        self.frames = [self.preprocessing(self.ob)]
+        self.etatPrec = None
 
-    def preprocessing(self, etat):
-        #print(etat.shape)
-        etat = np.dot(etat[..., :3], [0.2126, 0.7152, 0.0722])
-        print(etat.shape)
-        #etat = np.array(Image.fromarray(etat).resize((84,84)))
-        plt.imshow(etat, cmap = plt.get_cmap('gray'))
-        plt.show()
-        exit(0)
+    def preprocessing(self, frame):
+        # Luminance relative
+        etat = np.dot(frame[..., :3], [0.2126, 0.7152, 0.0722])
+        # Resize
+        etat = np.array(Image.fromarray(etat).resize((84,84), resample=Image.NEAREST))
+        # Normalisation
+        etat = etat/255
+        #plt.imshow(etat, cmap = plt.get_cmap('gray'))
+        #plt.show()
+        return etat
+
+    def convertFramesToInput(self, frames):
+        return torch.Tensor(frames)
 
 
     # avancement de l'agent d'un pas
     def step(self, training=False):
-        etat_ = self.preprocessing(self.ob)
-        x = torch.Tensor(etat_)
-        y = self.net.forward(x)
-        action = self.act(y)
-        self.ob, reward, self.done, _ = self.env.step(action)
+        if(len(self.frames)<self.m):
+            self.ob, reward, self.done, _ = self.env.step(self.action)
+            self.reward_etat += reward
+            self.frames.append(self.preprocessing(self.ob))
+            if self.done:
+                # Si le groupe contient un état terminal alors qu'on a pas encore m frames,
+                # On duplique la frame jusqu'à en avoir le bon nombre
+                self.frames.extend([self.preprocessing(self.ob)]*(self.m - len(self.frames)))
+                etat_ = torch.Tensor(self.frames).unsqueeze(0)
+                inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
+                self.buff.append(inter)
+        else:
+            etat_ = torch.Tensor(self.frames).unsqueeze(0)
+            x = etat_
+            y = self.net.forward(x)
+            self.action = self.act(y)
+            self.ob, reward, self.done, _ = self.env.step(self.action)
+
+            # sauvegarde de l'interraction dans le buffer
+            if not(self.etatPrec is None):
+                self.reward_etat += reward
+                inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
+                self.buff.append(inter)
+
+            self.frames = [self.preprocessing(self.ob)]
+            self.reward_etat = 0
+            self.etatPrec = etat_
 
         self.reward_sum += reward
-        
-        # sauvegarde de l'interraction dans le buffer
-        inter = Interaction(etat_, action, self.ob, reward, self.done)
-        self.buff.append(inter)
+
 
     def step_opti(self):
         etat_ = self.ob
@@ -180,7 +218,7 @@ class DQN_Agent(object):
         self.reward_sum += reward
 
     def learn(self):
-        batch = self.buff.sample(20)
+        batch = self.buff.sample(32)
         for exp in batch:
             self.cpt_app += 1
             # if(self.cpt_app%self.freq_copy==0):
@@ -194,8 +232,8 @@ class DQN_Agent(object):
             # self.optimizer_target.zero_grad()
             mse = torch.nn.MSELoss()
             if(not(exp.f)):
-                e = torch.Tensor(exp.e)
-                s = torch.Tensor(exp.s)
+                e = exp.e
+                s = exp.s
 
                 Q = self.net.forward(e)[exp.a]
                 Qc = self.net.forward(s)
@@ -214,7 +252,7 @@ class DQN_Agent(object):
                 # loss2.backward()
                 # self.optimizer_target.step()
             else:
-                e = torch.Tensor(exp.e)
+                e = exp.e
                 Q = self.net.forward(e)[exp.a]
                 loss = (Q - exp.r).pow(2) 
                 loss.backward()
