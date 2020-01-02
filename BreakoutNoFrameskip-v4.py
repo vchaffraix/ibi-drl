@@ -5,6 +5,8 @@ import torch
 import torch.nn.functional as F
 import copy
 import time
+import numpy as np
+#from PIL import Image
 
 import gym
 from gym import wrappers, logger
@@ -145,9 +147,19 @@ class DQN_Agent(object):
         self.reward_sum = 0
         self.ob = self.env.reset()
 
+    def preprocessing(self, etat):
+        #print(etat.shape)
+        etat = np.dot(etat[..., :3], [0.2126, 0.7152, 0.0722])
+        print(etat.shape)
+        #etat = np.array(Image.fromarray(etat).resize((84,84)))
+        plt.imshow(etat, cmap = plt.get_cmap('gray'))
+        plt.show()
+        exit(0)
+
+
     # avancement de l'agent d'un pas
-    def step(self):
-        etat_ = self.ob
+    def step(self, training=False):
+        etat_ = self.preprocessing(self.ob)
         x = torch.Tensor(etat_)
         y = self.net.forward(x)
         action = self.act(y)
