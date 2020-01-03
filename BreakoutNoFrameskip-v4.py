@@ -7,6 +7,9 @@ import copy
 import time
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
+import pickle
+from collections import deque
 
 import gym
 from gym import wrappers, logger
@@ -31,7 +34,7 @@ class Interaction:
 class Buffer:
     def __init__(self, taille):
         self.taille = taille
-        self.buff = []
+        self.buff = deque()
 
     def append(self, inter):
         if len(self.buff)>=self.taille:
@@ -46,6 +49,8 @@ class Buffer:
         if k>len(self.buff):
             k = len(self.buff)
         return random.sample(self.buff, k)
+    def clear(self):
+        self.buff.clear()
 
 # Agent à action random
 class RandomAgent(object):
@@ -72,7 +77,7 @@ class RandomAgent(object):
 
 
 class QModel(torch.nn.Module):
-    def __init__(self, e_size, a_size):
+    def __init__(self, a_size):
         super(QModel, self).__init__()
 
         # Channel d'entrée = 1
@@ -85,10 +90,10 @@ class QModel(torch.nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        x = torch.tanh(x)
+        x = F.relu(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv2(x)
-        x = torch.tanh(x)
+        x = F.relu(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv3(x)
         x = F.relu(x)
@@ -101,25 +106,27 @@ class QModel(torch.nn.Module):
         return output
 
 class DQN_Agent(object):
-    def __init__(self, env, buffer_size=100000):
-        self.gamma = 0.95
-        self.freq_copy = 1000
-        self.tau = 1
-        self.tau_decay = 0.999
-        self.min_tau = 0.2
-        self.exploration = "greedy"
-        self.sigma = 1e-3
-        self.alpha = 0.01
-        self.m = 4
+    def __init__(self, env, params):
+        self.gamma = params["gamma"]
+        self.freq_copy = params["freq_copy"]
+        self.tau = params["max_tau"]
+        self.tau_decay = params["tau_decay"]
+        self.min_tau = params["min_tau"]
+        self.exploration = params["exploration"]
+        self.sigma = params["sigma"]
+        self.alpha = params["alpha"]
+        self.m = params["m"]
+        self.target_update_strategy = params["target_update_strategy"]
+        self.cuda = False
+        self.done = False
 
         n_action = env.action_space.n
-        n_input = env.observation_space.shape[0]
         # NEURAL NETWORK
-        self.net = QModel(n_input, n_action)
+        self.net = QModel(n_action)
         self.target = copy.deepcopy(self.net)
-        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.sigma)
+        self.optimizer = params["optimizer"](self.net.parameters(), lr=self.sigma)
         # self.optimizer_target = torch.optim.SGD(self.target.parameters(), lr=0.00001)
-        self.buff = Buffer(buffer_size)
+        self.buff = Buffer(params["buffer_size"])
         self.reward_sum = 0
         self.env = env
 
@@ -172,10 +179,6 @@ class DQN_Agent(object):
         #plt.show()
         return etat
 
-    def convertFramesToInput(self, frames):
-        return torch.Tensor(frames)
-
-
     # avancement de l'agent d'un pas
     def step(self, training=False):
         if(len(self.frames)<self.m):
@@ -193,8 +196,15 @@ class DQN_Agent(object):
             etat_ = torch.Tensor(self.frames).unsqueeze(0)
             x = etat_
             y = self.net.forward(x)
-            self.action = self.act(y)
+            # si en mode training alors stratégie d'explo
+            if(training):
+                self.action = self.act(y)
+            # sinon best action
+            else:
+                self.action = y.max(0)[1].item()
+
             self.ob, reward, self.done, _ = self.env.step(self.action)
+            print(self.done)
 
             # sauvegarde de l'interraction dans le buffer
             if not(self.etatPrec is None):
@@ -220,16 +230,18 @@ class DQN_Agent(object):
     def learn(self):
         batch = self.buff.sample(32)
         for exp in batch:
-            self.cpt_app += 1
-            # if(self.cpt_app%self.freq_copy==0):
-                # self.target.parameters.copy_(self.net.parameters())
-                # for target_param, param in zip(self.target.parameters(), self.net.parameters()):
-                    # target_param.data.copy_(param )
+            if(self.target_update_strategy=="freq"):
+                self.cpt_app += 1
+                if(self.cpt_app%self.freq_copy==0):
+                    for target_param, param in zip(self.target.parameters(), self.net.parameters()):
+                        target_param.data.copy_(param )
+            elif(self.target_update_strategy=="polyak"):
+                for target_param, param in zip(self.target.parameters(), self.net.parameters()):
+                    target_param.data.copy_(self.alpha * param + (1-self.alpha)*target_param )
+            else:
+                raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
 
-            for target_param, param in zip(self.target.parameters(), self.net.parameters()):
-                target_param.data.copy_(self.alpha * param + (1-self.alpha)*target_param )
             self.optimizer.zero_grad()
-            # self.optimizer_target.zero_grad()
             mse = torch.nn.MSELoss()
             if(not(exp.f)):
                 e = exp.e
@@ -261,7 +273,7 @@ class DQN_Agent(object):
 
 def startEpoch(agent, episode_count, training=True):
     r_sums = []
-    for i in range(episode_count):
+    for i in tqdm(range(episode_count)):
         agent.reset()
         while True:
             agent.step(training)
@@ -273,6 +285,13 @@ def startEpoch(agent, episode_count, training=True):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=None)
+    parser.add_argument("agent", nargs='?', default=None, help='Fichier d\'un agent déjà entraîné')
+    parser.add_argument("--cuda", action="store_true", help="Utilise cuda pour l\'entrainement")
+    parser.add_argument("-s", "--save", action="store", help="Sauvegarde l\'agent après entraînement")
+    parser.add_argument("-l", "--learn", type=int, action="store", default=500, help="Nombre d\'épisodes d\'apprentissage.")
+    parser.add_argument("-t", "--test", type=int, action="store", default=300, help="Nombre d\'épisodes de test")
+    args = parser.parse_args()
     logger.set_level(logger.INFO)
     env = gym.make("BreakoutNoFrameskip-v4")
 
@@ -284,13 +303,39 @@ if __name__ == '__main__':
     env = wrappers.Monitor(env, directory=outdir, force=True)
     env.seed(0)
 
-    agent_dqn = DQN_Agent(env, 1000000)
+    EXPLO = ["greedy", "boltzmann"]
+    TARGET_UPDATE = ["freq", "polyak"]
+    PARAMS = {
+        "gamma": 0.95,
+        "max_tau": 1,
+        "min_tau": 0.1,
+        "tau_decay": 0.999,
+        "exploration": EXPLO[0],
+        "sigma": 1e-4,
+        "alpha": 0.01,
+        "m": 4,
+        "buffer_size": 100000,
+        "freq_copy": 1000,
+        "target_update_strategy": TARGET_UPDATE[0],
+        "optimizer": torch.optim.RMSprop
+    }
 
-    episode_learn = 500
-    episode_test = 300
+    if args.agent!=None:
+        agent_dqn = pickle.load(open(args.agent, "rb"))
+    else:
+        agent_dqn = DQN_Agent(env, PARAMS)
 
+    agent_dqn.cuda = args.cuda
+
+    episode_learn = args.learn
+    episode_test = args.test
     # Début d'une époque de train
     reward_sums = startEpoch(agent=agent_dqn, episode_count=episode_learn, training=True)
+    reward_sums += startEpoch(agent=agent_dqn, episode_count=episode_test, training=False)
+
+    if args.save:
+        agent_dqn.buff.clear()
+        pickle.dump(agent_dqn, open(args.save, 'wb'))
 
     fig_rewards = plt.figure()
     fig_rewards.suptitle('Récompense cumumée par épisode', fontsize=11)
