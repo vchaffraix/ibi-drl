@@ -259,12 +259,12 @@ class DQN_Agent(object):
 
 
     def step_test(self):
-        etat_ = torch.Tensor(self.frames).unsqueeze(0)
-        x = etat_
-        y = self.net(x)
+        x = torch.Tensor(self.ob).unsqueeze(0)
+        y = self.net.forward(x)
         # on prend la meilleure action
         self.action = y.max(0)[1].item()
         self.ob, reward, self.done, _ = self.env.step(self.action)
+        self.reward_sum += reward
 
     def learn(self):
         self.optimizer.zero_grad()
@@ -275,14 +275,14 @@ class DQN_Agent(object):
         s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
-        e = self.net.forward(e).reshape(self.batch_size,self.n_action)
+        e = self.net.forward(e).reshape(len(batch),self.n_action)
         # On récupère les Q valeurs des actions
         Q = torch.index_select(e, 1, a.long()).diag()
 
-        s = self.target.forward(s).reshape(self.batch_size,self.n_action)
-        Qc = torch.max(s, 1)[0]
+        s = self.target.forward(s).reshape(len(batch),self.n_action)
+        Qc = torch.max(s, 1)[0].detach()
         loss = self.criterion(Q, r + f * (self.gamma * Qc))
-        loss.backward()
+        loss.backward(retain_graph=False)
         self.optimizer.step()
         if(self.target_update_strategy=="freq"):
             self.cpt_app += 1
@@ -325,10 +325,13 @@ def startEpoch(agent, episode_count, training=True):
     for i in tqdm(range(episode_count)):
         agent.reset()
         while True:
-            agent.step()
+            if training:
+                agent.step()
+                agent.learn()
+            else:
+                agent.step_test()
             if agent.done:
                 break
-        if training: agent.learn()
         r_sums.append(agent.reward_sum)
     return r_sums
 
@@ -364,7 +367,7 @@ if __name__ == '__main__':
         "alpha": 0.005,
         "m": 4,
         "frame_skip": 4,
-        "buffer_size": 100000,
+        "buffer_size": 10000,
         "batch_size": 32,
         "freq_copy": 1000,
         "target_update_strategy": TARGET_UPDATE[0],
