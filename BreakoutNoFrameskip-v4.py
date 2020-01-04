@@ -318,8 +318,6 @@ class DQN_Agent(object):
                 # loss = (Q - exp.r).pow(2) 
                 # loss.backward()
                 # self.optimizer.step()
-            if self.cuda:
-                torch.cuda.empty_cache()
                 
 
 def startEpoch(agent, episode_count, training=True):
