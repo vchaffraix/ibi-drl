@@ -10,7 +10,6 @@ from PIL import Image
 from tqdm import tqdm
 import pickle
 from collections import deque
-
 import gym
 from gym import wrappers, logger
 
@@ -102,16 +101,16 @@ class QModel(torch.nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.bn1(x)
+        # x = self.bn1(x)
         x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv2(x)
-        x = self.bn2(x)
+        # x = self.bn2(x)
         x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv3(x)
-        x = self.bn3(x)
-        x = torch.tanh(x)
+        # x = self.bn3(x)
+        x = torch.relu(x)
         #x = F.max_pool2d(x, 2)
         x = torch.flatten(x, 1)
         x = self.fc1(x)
@@ -122,6 +121,7 @@ class QModel(torch.nn.Module):
 
 class DQN_Agent(object):
     def __init__(self, env, params):
+        # PARAMS
         self.gamma = params["gamma"]
         self.freq_copy = params["freq_copy"]
         self.tau = params["max_tau"]
@@ -131,24 +131,20 @@ class DQN_Agent(object):
         self.sigma = params["sigma"]
         self.alpha = params["alpha"]
         self.m = params["m"]
+        self.frame_skip = params["frame_skip"]
         self.target_update_strategy = params["target_update_strategy"]
         self.batch_size = params["batch_size"]
         self.cuda = False
-        self.done = False
-        self.device = None
-
-        n_action = env.action_space.n
         # NEURAL NETWORK
-        self.net = QModel(n_action)
+        self.n_action = env.action_space.n
+        self.net = QModel(self.n_action)
         self.target = copy.deepcopy(self.net)
         self.optimizer = params["optimizer"](self.net.parameters(), lr=self.sigma)
-        # self.optimizer_target = torch.optim.SGD(self.target.parameters(), lr=0.00001)
+        self.criterion = torch.nn.MSELoss()
         self.buff = Buffer(params["buffer_size"])
-        self.reward_sum = 0
-        self.env = env
 
-        self.cpt_app = 0
-
+        self.env = wrappers.AtariPreprocessing(env, frame_skip=self.frame_skip, screen_size=84,grayscale_obs=True, scale_obs=True) 
+        self.env = wrappers.FrameStack(self.env, self.m)
     # stratégie d'exploration de l'agent
     # input:
     #   * Q : liste des q-valeurs pour chaque action
@@ -180,9 +176,12 @@ class DQN_Agent(object):
     def reset(self):
         self.reward_sum = 0
         self.reward_etat = 0
+        self.cpt_app = 0
+        self.cpt_step = 0
         self.ob = self.env.reset()
+        self.done = False
         self.action = self.env.action_space.sample()
-        self.frames = [self.preprocessing(self.ob)]
+        self.frames = torch.Tensor([self.preprocessing(self.ob)]*4)
         self.etatPrec = None
 
     def preprocessing(self, frame):
@@ -197,98 +196,128 @@ class DQN_Agent(object):
         return etat
 
     # avancement de l'agent d'un pas
-    def step(self, training=False):
-        if(len(self.frames)<self.m):
-            self.ob, reward, self.done, _ = self.env.step(self.action)
-            self.reward_etat += reward
-            self.frames.append(self.preprocessing(self.ob))
-            if self.done:
-                # Si le groupe contient un état terminal alors qu'on a pas encore m frames,
-                # On duplique la frame jusqu'à en avoir le bon nombre
-                self.frames.extend([self.preprocessing(self.ob)]*(self.m - len(self.frames)))
-                etat_ = torch.Tensor(self.frames).unsqueeze(0)
-                inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
-                self.buff.append(inter)
-        else:
-            etat_ = torch.Tensor(self.frames).unsqueeze(0)
-            x = etat_
-            y = self.net(x)
-            # si en mode training alors stratégie d'explo
-            if(training):
-                self.action = self.act(y)
-            # sinon best action
-            else:
-                self.action = y.max(0)[1].item()
-                #print(y)
-                #print(y.max(0)[1].item())
-
-            self.ob, reward, self.done, _ = self.env.step(self.action)
-
-            # sauvegarde de l'interraction dans le buffer
-            if not(self.etatPrec is None):
-                self.reward_etat += reward
-                inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
-                self.buff.append(inter)
-
-            self.frames = [self.preprocessing(self.ob)]
-            self.reward_etat = 0
-            self.etatPrec = etat_
+    def step(self):
+        e = torch.Tensor(self.ob)
+        x = e.unsqueeze(0)
+        y = self.net(x)
+        self.action = self.act(y)
+        self.ob, reward, self.done, _ = self.env.step(self.action)
+        s = torch.Tensor(self.ob)
+        inter = Interaction(e, self.action, s, reward, self.done)
+        self.buff.append(inter)
 
         self.reward_sum += reward
+
+        # self.cpt_step += 1
+        # if(self.cpt_step%100==0):
+            # self.cpt_step = 0
+            # f, axarr = plt.subplots(2,2)
+            # axarr[0,0].imshow(etat[0], cmap = plt.get_cmap('gray'))
+            # axarr[0,1].imshow(etat[1], cmap = plt.get_cmap('gray'))
+            # axarr[1,0].imshow(etat[2], cmap = plt.get_cmap('gray'))
+            # axarr[1,1].imshow(etat[3], cmap = plt.get_cmap('gray'))
+            # plt.show()
+
+        # On skip un certain nombre de frames
+        # if(cpt_step<self.frame_skip):
+            # self.ob, reward, self.done, _ = self.env.step(self.action)
+        # else:
+            # cpt_step = 0
+
+        # cpt_step += 1
+
+        # if(len(self.frames)<self.m):
+            # self.ob, reward, self.done, _ = self.env.step(self.action)
+            # self.reward_etat += reward
+            # self.frames.append(self.preprocessing(self.ob))
+            # if self.done:
+                # # Si le groupe contient un état terminal alors qu'on a pas encore m frames,
+                # # On duplique la frame jusqu'à en avoir le bon nombre
+                # self.frames.extend([self.preprocessing(self.ob)]*(self.m - len(self.frames)))
+                # etat_ = torch.Tensor(self.frames).unsqueeze(0)
+                # inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
+                # self.buff.append(inter)
+        # else:
+            # etat_ = torch.Tensor(self.frames).unsqueeze(0)
+            # x = etat_
+            # y = self.net(x)
+            # self.action = self.act(y)
+            # self.ob, reward, self.done, _ = self.env.step(self.action)
+            # # sauvegarde de l'interraction dans le buffer
+            # if not(self.etatPrec is None):
+                # self.reward_etat += reward
+                # inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
+                # self.buff.append(inter)
+
+            # self.frames = [self.preprocessing(self.ob)]
+            # self.reward_etat = 0
+            # self.etatPrec = etat_
+
+        # self.reward_sum += reward
+        # if self.cuda:
+            # torch.cuda.empty_cache()
+
+
+    def step_test(self):
+        etat_ = torch.Tensor(self.frames).unsqueeze(0)
+        x = etat_
+        y = self.net(x)
+        # on prend la meilleure action
+        self.action = y.max(0)[1].item()
+        self.ob, reward, self.done, _ = self.env.step(self.action)
+
+    def learn(self):
+        self.optimizer.zero_grad()
+        batch = self.buff.sample(self.batch_size)
+
+        e = torch.cat(tuple(exp.e.unsqueeze(0) for exp in batch))
+        a = torch.cat(tuple(torch.Tensor([exp.a]) for exp in batch))
+        s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
+        r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
+        f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
+        e = self.net.forward(e).reshape(self.batch_size,self.n_action)
+        # On récupère les Q valeurs des actions
+        Q = torch.index_select(e, 1, a.long()).diag()
+
+        s = self.target.forward(s).reshape(self.batch_size,self.n_action)
+        Qc = torch.max(s, 1)[0]
+        loss = self.criterion(Q, r + f * (self.gamma * Qc))
+        loss.backward()
+        self.optimizer.step()
+        if(self.target_update_strategy=="freq"):
+            self.cpt_app += 1
+            if(self.cpt_app%self.freq_copy==0):
+                self.cpt_app = 0
+                for target_param, param in zip(self.target.parameters(), self.net.parameters()):
+                    target_param.data.copy_(param )
+        elif(self.target_update_strategy=="polyak"):
+            for target_param, param in zip(self.target.parameters(), self.net.parameters()):
+                target_param.data.copy_(self.alpha * param + (1-self.alpha)*target_param )
+        else:
+            raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
+
         if self.cuda:
             torch.cuda.empty_cache()
 
+        # for exp in batch:
+            # self.optimizer.zero_grad()
+            # mse = torch.nn.SmoothL1Loss()
+            # if(not(exp.f)):
+                # e = exp.e
+                # s = exp.s
 
-    def step_opti(self):
-        etat_ = self.ob
-        x = torch.Tensor(etat_)
-        y = self.net.forward(x)
-        action = y.max(1)[1].item()
-        self.ob, reward, self.done, _ = self.env.step(action)
-        self.reward_sum += reward
+                # Q = self.net.forward(e)[exp.a]
+                # Qc = self.target.forward(s)
 
-    def learn(self):
-        batch = self.buff.sample(self.batch_size)
-        for exp in batch:
-            if(self.target_update_strategy=="freq"):
-                self.cpt_app += 1
-                if(self.cpt_app%self.freq_copy==0):
-                    for target_param, param in zip(self.target.parameters(), self.net.parameters()):
-                        target_param.data.copy_(param )
-            elif(self.target_update_strategy=="polyak"):
-                for target_param, param in zip(self.target.parameters(), self.net.parameters()):
-                    target_param.data.copy_(self.alpha * param + (1-self.alpha)*target_param )
-            else:
-                raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
-
-            self.optimizer.zero_grad()
-            mse = torch.nn.SmoothL1Loss()
-            if(not(exp.f)):
-                e = exp.e
-                s = exp.s
-
-                Q = self.net.forward(e)[exp.a]
-                Qc = self.net.forward(s)
-                
-                # Q2 = self.target.forward(e)[exp.a]
-                Q2c = self.target.forward(s)
-
-                loss = mse(Q, (exp.r + self.gamma * Q2c.max()))
-                # loss2 = (Q2 - (exp.r + self.gamma * Qc.max())).pow(2)
                 # loss = mse(Q, (exp.r + self.gamma * Qc.max()))
-                # print(Q)
-                # print((exp.r + self.gamma * Qc.max().item()))
-                # print(loss.item())
-                loss.backward()
-                self.optimizer.step()
-                # loss2.backward()
-                # self.optimizer_target.step()
-            else:
-                e = exp.e
-                Q = self.net.forward(e)[exp.a]
-                loss = (Q - exp.r).pow(2) 
-                loss.backward()
-                self.optimizer.step()
+                # loss.backward()
+                # self.optimizer.step()
+            # else:
+                # e = exp.e
+                # Q = self.net.forward(e)[exp.a]
+                # loss = (Q - exp.r).pow(2) 
+                # loss.backward()
+                # self.optimizer.step()
             if self.cuda:
                 torch.cuda.empty_cache()
                 
@@ -298,7 +327,7 @@ def startEpoch(agent, episode_count, training=True):
     for i in tqdm(range(episode_count)):
         agent.reset()
         while True:
-            agent.step(training)
+            agent.step()
             if agent.done:
                 break
         if training: agent.learn()
@@ -336,6 +365,7 @@ if __name__ == '__main__':
         "sigma": 1e-3,
         "alpha": 0.005,
         "m": 4,
+        "frame_skip": 4,
         "buffer_size": 100000,
         "batch_size": 32,
         "freq_copy": 1000,
