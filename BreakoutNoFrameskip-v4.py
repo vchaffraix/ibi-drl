@@ -34,11 +34,11 @@ class Interaction:
 class Buffer:
     def __init__(self, taille):
         self.taille = taille
-        self.buff = deque()
+        self.buff = deque(maxlen=self.taille)
 
     def append(self, inter):
-        if len(self.buff)>=self.taille:
-            self.buff.pop(0)
+        #if len(self.buff)>=self.taille:
+        #    self.buff.pop(0)
         self.buff.append(inter)
 
     def length(self):
@@ -82,47 +82,41 @@ class QModel(torch.nn.Module):
 
         # Channel d'entrée = 1
         # Sorties de la couche = 14
-        self.conv1 = torch.nn.Conv3d(1, 32, kernel_size=8, stride=4)
-        self.conv2 = torch.nn.Conv3d(32, 64, kernel_size=4, stride=3)
-        self.conv3 = torch.nn.Conv3d(64, 64, kernel_size=3, stride=1)
+        self.conv1 = torch.nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.bn1 = torch.nn.BatchNorm2d(32)
+        self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=3)
+        self.bn2 = torch.nn.BatchNorm2d(64)
+        self.conv3 = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.bn3 = torch.nn.BatchNorm2d(64)
+
+        #Fonction qui permet de déterminer la taille de l'entrée de la couche fully-connected
+        def conv2d_size_out(size, kernel_size, stride):
+            return (size - (kernel_size - 1) - 1) // stride + 1
+
+        fc_input_size = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 3), 3, 1)
+        fc_input_size = fc_input_size * fc_input_size*64
         #self.fc1 = torch.nn.Linear(3136, 512)
-        self.fc1 = torch.nn.Linear(1024, 512)
+        self.fc1 = torch.nn.Linear(fc_input_size, 512)
         self.fc2 = torch.nn.Linear(512, a_size)
 
-        #self.conv1 = torch.nn.Conv2d(4, 28, kernel_size=8, stride=4)
-        #self.conv2 = torch.nn.Conv2d(28, 14, kernel_size=4, stride=2)
-        #self.conv3 = torch.nn.Conv2d(14, 10, kernel_size=2, stride=1)
-        #self.fc1 = torch.nn.Linear(10, 50)
-        #self.fc2 = torch.nn.Linear(50, a_size)
 
     def forward(self, x):
         x = self.conv1(x)
+        x = self.bn1(x)
         x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv2(x)
+        x = self.bn2(x)
         x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv3(x)
+        x = self.bn3(x)
         x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = torch.flatten(x, 1)
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
-
-        #x = self.conv1(x)
-        #x = torch.tanh(x)
-        #x = self.conv2(x)
-        #x = torch.tanh(x)
-        #x = F.max_pool2d(x, 2)
-        #x = self.conv3(x)
-        #x = torch.tanh(x)
-        #x = F.max_pool2d(x, 2)
-        #x = torch.flatten(x, 1)
-        #x = self.fc1(x)
-        #x = F.relu(x)
-        #x = self.fc2(x)
-
         output = x.flatten()
         return output
 
@@ -195,7 +189,7 @@ class DQN_Agent(object):
         # Luminance relative
         etat = np.dot(frame[..., :3], [0.2126, 0.7152, 0.0722])
         # Resize
-        etat = np.array(Image.fromarray(etat).resize((84,84), resample=Image.NEAREST))
+        etat = np.array(Image.fromarray(etat).resize((84,84), resample=Image.NEAREST), dtype="float16")
         # Normalisation
         etat = etat/255
         #plt.imshow(etat, cmap = plt.get_cmap('gray'))
@@ -218,7 +212,7 @@ class DQN_Agent(object):
         else:
             etat_ = torch.Tensor(self.frames).unsqueeze(0)
             x = etat_
-            y = self.net.forward(x)
+            y = self.net(x)
             # si en mode training alors stratégie d'explo
             if(training):
                 self.action = self.act(y)
@@ -242,13 +236,15 @@ class DQN_Agent(object):
             self.etatPrec = etat_
 
         self.reward_sum += reward
+        if self.cuda:
+            torch.cuda.empty_cache()
 
 
     def step_opti(self):
         etat_ = self.ob
         x = torch.Tensor(etat_)
         y = self.net.forward(x)
-        action = y.max(0)[1].item()
+        action = y.max(1)[1].item()
         self.ob, reward, self.done, _ = self.env.step(action)
         self.reward_sum += reward
 
@@ -267,7 +263,7 @@ class DQN_Agent(object):
                 raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
 
             self.optimizer.zero_grad()
-            mse = torch.nn.MSELoss()
+            mse = torch.nn.SmoothL1Loss()
             if(not(exp.f)):
                 e = exp.e
                 s = exp.s
@@ -294,6 +290,8 @@ class DQN_Agent(object):
                 loss = (Q - exp.r).pow(2) 
                 loss.backward()
                 self.optimizer.step()
+            if self.cuda:
+                torch.cuda.empty_cache()
                 
 
 def startEpoch(agent, episode_count, training=True):
@@ -340,9 +338,9 @@ if __name__ == '__main__':
         "alpha": 0.005,
         "m": 4,
         "buffer_size": 100000,
-        "batch_size": 2048,
+        "batch_size": 32,
         "freq_copy": 1000,
-        "target_update_strategy": TARGET_UPDATE[1],
+        "target_update_strategy": TARGET_UPDATE[0],
         "optimizer": torch.optim.RMSprop
     }
 
