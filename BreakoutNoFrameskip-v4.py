@@ -223,7 +223,6 @@ class DQN_Agent(object):
                 #print(y.max(0)[1].item())
 
             self.ob, reward, self.done, _ = self.env.step(self.action)
-            #print(self.done)
 
             # sauvegarde de l'interraction dans le buffer
             if not(self.etatPrec is None):
@@ -313,7 +312,7 @@ if __name__ == '__main__':
     parser.add_argument("--cuda", action="store_true", help="Utilise cuda pour l\'entrainement")
     parser.add_argument("-s", "--save", action="store", help="Sauvegarde l\'agent après entraînement")
     parser.add_argument("-l", "--learn", type=int, action="store", default=500, help="Nombre d\'épisodes d\'apprentissage.")
-    parser.add_argument("-t", "--test", type=int, action="store", default=300, help="Nombre d\'épisodes de test")
+    parser.add_argument("-t", "--test", type=int, action="store", default=0, help="Nombre d\'épisodes de test")
     args = parser.parse_args()
     logger.set_level(logger.INFO)
     env = gym.make("BreakoutNoFrameskip-v4")
