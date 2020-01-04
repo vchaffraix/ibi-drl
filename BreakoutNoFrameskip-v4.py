@@ -83,25 +83,46 @@ class QModel(torch.nn.Module):
         # Channel d'entrée = 1
         # Sorties de la couche = 14
         self.conv1 = torch.nn.Conv2d(4, 32, kernel_size=8, stride=4)
-        self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv2 = torch.nn.Conv2d(32, 64, kernel_size=4, stride=3)
         self.conv3 = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc1 = torch.nn.Linear(3136, 512)
+        #self.fc1 = torch.nn.Linear(3136, 512)
+        self.fc1 = torch.nn.Linear(1024, 512)
         self.fc2 = torch.nn.Linear(512, a_size)
+
+        #self.conv1 = torch.nn.Conv2d(4, 28, kernel_size=8, stride=4)
+        #self.conv2 = torch.nn.Conv2d(28, 14, kernel_size=4, stride=2)
+        #self.conv3 = torch.nn.Conv2d(14, 10, kernel_size=2, stride=1)
+        #self.fc1 = torch.nn.Linear(10, 50)
+        #self.fc2 = torch.nn.Linear(50, a_size)
 
     def forward(self, x):
         x = self.conv1(x)
-        x = F.relu(x)
+        x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv2(x)
-        x = F.relu(x)
+        x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = self.conv3(x)
-        x = F.relu(x)
+        x = torch.tanh(x)
         #x = F.max_pool2d(x, 2)
         x = torch.flatten(x, 1)
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
+
+        #x = self.conv1(x)
+        #x = torch.tanh(x)
+        #x = self.conv2(x)
+        #x = torch.tanh(x)
+        #x = F.max_pool2d(x, 2)
+        #x = self.conv3(x)
+        #x = torch.tanh(x)
+        #x = F.max_pool2d(x, 2)
+        #x = torch.flatten(x, 1)
+        #x = self.fc1(x)
+        #x = F.relu(x)
+        #x = self.fc2(x)
+
         output = x.flatten()
         return output
 
@@ -117,8 +138,10 @@ class DQN_Agent(object):
         self.alpha = params["alpha"]
         self.m = params["m"]
         self.target_update_strategy = params["target_update_strategy"]
+        self.batch_size = params["batch_size"]
         self.cuda = False
         self.done = False
+        self.device = None
 
         n_action = env.action_space.n
         # NEURAL NETWORK
@@ -202,6 +225,8 @@ class DQN_Agent(object):
             # sinon best action
             else:
                 self.action = y.max(0)[1].item()
+                #print(y)
+                #print(y.max(0)[1].item())
 
             self.ob, reward, self.done, _ = self.env.step(self.action)
 
@@ -227,7 +252,7 @@ class DQN_Agent(object):
         self.reward_sum += reward
 
     def learn(self):
-        batch = self.buff.sample(32)
+        batch = self.buff.sample(self.batch_size)
         for exp in batch:
             if(self.target_update_strategy=="freq"):
                 self.cpt_app += 1
@@ -310,21 +335,26 @@ if __name__ == '__main__':
         "min_tau": 0.1,
         "tau_decay": 0.999,
         "exploration": EXPLO[0],
-        "sigma": 1e-4,
-        "alpha": 0.01,
+        "sigma": 1e-3,
+        "alpha": 0.005,
         "m": 4,
         "buffer_size": 100000,
+        "batch_size": 2048,
         "freq_copy": 1000,
-        "target_update_strategy": TARGET_UPDATE[0],
+        "target_update_strategy": TARGET_UPDATE[1],
         "optimizer": torch.optim.RMSprop
     }
 
+    if args.cuda:
+        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        torch.backends.cudnn.benchmark = True
     if args.agent!=None:
         agent_dqn = pickle.load(open(args.agent, "rb"))
     else:
         agent_dqn = DQN_Agent(env, PARAMS)
 
-    agent_dqn.cuda = args.cuda
+    if args.cuda:
+        agent_dqn.net = agent_dqn.net.cuda()
 
     episode_learn = args.learn
     episode_test = args.test
