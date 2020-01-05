@@ -292,12 +292,12 @@ class DQN_Agent(object):
 
         s = self.target.forward(s).reshape(len(batch),self.n_action)
         Qc = torch.max(s, 1)[0].detach()
-        loss = self.criterion(Q, r + f * (self.gamma * Qc))
+        loss = self.criterion(Q, r + (1-f) * (self.gamma * Qc))
         loss.backward(retain_graph=False)
         self.optimizer.step()
         if(self.target_update_strategy=="freq"):
-            self.cpt_app += 1
-            if(self.cpt_app%self.freq_copy==0):
+            self.cpt_app += len(batch)
+            if(self.cpt_app>self.freq_copy):
                 self.cpt_app = 0
                 for target_param, param in zip(self.target.parameters(), self.net.parameters()):
                     target_param.data.copy_(param )
