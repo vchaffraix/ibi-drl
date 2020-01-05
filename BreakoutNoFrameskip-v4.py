@@ -332,13 +332,13 @@ class DQN_Agent(object):
                 # self.optimizer.step()
                 
 
-def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, save_name="auto"):
+def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, save_name=None):
     r_sums = []
     cpt_save = 0
     if save_name is None:
         save_name="auto"
     for i in tqdm(range(episode_count)):
-        if(save+1 and i%save_rate==0):
+        if(save and (i+1)%save_rate==0):
             saveModel(agent, "autosave/"+save_name+"_episode"+str(i))
         agent.reset()
         while True:
@@ -397,7 +397,7 @@ if __name__ == '__main__':
         "m": 4,
         "frame_skip": 4,
         "buffer_size": 10000,
-        "batch_size": 32,
+        "batch_size": 64,
         "freq_copy": 100,
         "target_update_strategy": TARGET_UPDATE[0],
         "optimizer": torch.optim.RMSprop
