@@ -356,7 +356,7 @@ def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, sa
     return r_sums
 
 def saveModel(agent, name):
-    agent.buff.clear()
+    # agent.buff.clear()
     state = {
         "model":agent.net.state_dict(),
         "params": agent.params
