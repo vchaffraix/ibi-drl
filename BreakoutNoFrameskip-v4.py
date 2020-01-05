@@ -158,7 +158,6 @@ class DQN_Agent(object):
     #   * si la stratégie choisie est incorrecte
     def act(self, Q):
         tirage = random.random()
-        self.tau = self.min_tau + (self.tau-self.min_tau)*self.tau_decay
         if(self.exploration=="greedy"):
             if(tirage>=self.tau):
                 return Q.max(0)[1].item()
@@ -349,6 +348,7 @@ def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, sa
                 agent.step_test()
             if agent.done:
                 break
+        agent.tau = agent.min_tau + (agent.tau-agent.min_tau)*agent.tau_decay
         r_sums.append(agent.reward_sum)
     return r_sums
 
@@ -390,7 +390,7 @@ if __name__ == '__main__':
         "gamma": 0.95,
         "max_tau": 1,
         "min_tau": 0.1,
-        "tau_decay": 0.999,
+        "tau_decay": 0.99,
         "exploration": EXPLO[0],
         "sigma": 1e-3,
         "alpha": 0.005,
