@@ -338,8 +338,7 @@ def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, sa
     if save_name is None:
         save_name="auto"
     for i in tqdm(range(episode_count)):
-        if(save and i%save_rate==0):
-            cpt_save += 1
+        if(save+1 and i%save_rate==0):
             saveModel(agent, "autosave/"+save_name+"_episode"+str(i))
         agent.reset()
         while True:
