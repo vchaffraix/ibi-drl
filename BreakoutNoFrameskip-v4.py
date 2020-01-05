@@ -15,6 +15,9 @@ from gym import wrappers, logger
 
 import matplotlib.pyplot as plt
 
+import GPUtil
+
+
 # Structure d'une interaction :
 #   * e : état avant action
 #   * a : action
@@ -120,7 +123,7 @@ class QModel(torch.nn.Module):
         return output
 
 class DQN_Agent(object):
-    def __init__(self, env, params):
+    def __init__(self, env, params, net=None):
         # PARAMS
         self.gamma = params["gamma"]
         self.freq_copy = params["freq_copy"]
@@ -138,6 +141,8 @@ class DQN_Agent(object):
         # NEURAL NETWORK
         self.n_action = env.action_space.n
         self.net = QModel(self.n_action)
+        if net is not None:
+            self.net.load_state_dict(net)
         self.target = copy.deepcopy(self.net)
         self.optimizer = params["optimizer"](self.net.parameters(), lr=self.sigma)
         self.criterion = torch.nn.MSELoss()
@@ -183,6 +188,8 @@ class DQN_Agent(object):
         self.action = self.env.action_space.sample()
         self.frames = torch.Tensor([self.preprocessing(self.ob)]*4)
         self.etatPrec = None
+        if self.cuda:
+            torch.cuda.empty_cache()
 
     def preprocessing(self, frame):
         # Luminance relative
@@ -207,6 +214,9 @@ class DQN_Agent(object):
         self.buff.append(inter)
 
         self.reward_sum += reward
+
+        if self.cuda:
+            torch.cuda.empty_cache()
 
         # self.cpt_step += 1
         # if(self.cpt_step%100==0):
@@ -269,13 +279,13 @@ class DQN_Agent(object):
     def learn(self):
         self.optimizer.zero_grad()
         batch = self.buff.sample(self.batch_size)
-
         e = torch.cat(tuple(exp.e.unsqueeze(0) for exp in batch))
         a = torch.cat(tuple(torch.Tensor([exp.a]) for exp in batch))
         s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
         e = self.net.forward(e).reshape(self.batch_size,self.n_action)
+
         # On récupère les Q valeurs des actions
         Q = torch.index_select(e, 1, a.long()).diag()
 
@@ -297,6 +307,9 @@ class DQN_Agent(object):
             raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
 
         if self.cuda:
+            #print("toto")
+            #print(torch.cuda.memory_allocated())
+            #print(torch.cuda.memory_cached())
             torch.cuda.empty_cache()
 
         # for exp in batch:
@@ -364,9 +377,9 @@ if __name__ == '__main__':
         "alpha": 0.005,
         "m": 4,
         "frame_skip": 4,
-        "buffer_size": 100000,
+        "buffer_size": 10000,
         "batch_size": 32,
-        "freq_copy": 1000,
+        "freq_copy": 100,
         "target_update_strategy": TARGET_UPDATE[0],
         "optimizer": torch.optim.RMSprop
     }
@@ -374,12 +387,14 @@ if __name__ == '__main__':
     if args.cuda:
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
         torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.enabled = True
     if args.agent!=None:
-        agent_dqn = pickle.load(open(args.agent, "rb"))
+        agent_dqn = DQN_Agent(env, PARAMS, torch.load(args.agent+'.pt'))
     else:
         agent_dqn = DQN_Agent(env, PARAMS)
 
     if args.cuda:
+        agent_dqn.cuda = True
         agent_dqn.net = agent_dqn.net.cuda()
 
     episode_learn = args.learn
@@ -390,10 +405,10 @@ if __name__ == '__main__':
 
     if args.save:
         agent_dqn.buff.clear()
-        pickle.dump(agent_dqn, open(args.save, 'wb'))
+        torch.save(agent_dqn.net.state_dict(), args.save+'.pt')
 
     fig_rewards = plt.figure()
-    fig_rewards.suptitle('Récompense cumumée par épisode', fontsize=11)
+    fig_rewards.suptitle('Récompense cumulée par épisode', fontsize=11)
     plt.xlabel('Episode N°', fontsize=9) 
     plt.ylabel('Récompense cumulée', fontsize=9)
     plt.plot(reward_sums)
