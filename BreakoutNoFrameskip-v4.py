@@ -117,8 +117,7 @@ class QModel(torch.nn.Module):
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x)
-        output = x.flatten()
-        return output
+        return x
 
 class DQN_Agent(object):
     def __init__(self, env, params, net=None):
@@ -204,7 +203,7 @@ class DQN_Agent(object):
     def step(self):
         e = torch.Tensor(self.ob)
         x = e.unsqueeze(0)
-        y = self.net(x)
+        y = self.net(x).flatten()
         self.action = self.act(y)
         self.ob, reward, self.done, _ = self.env.step(self.action)
         s = torch.Tensor(self.ob)
@@ -268,7 +267,7 @@ class DQN_Agent(object):
 
     def step_test(self):
         x = torch.Tensor(self.ob).unsqueeze(0)
-        y = self.net.forward(x)
+        y = self.net.forward(x).flatten()
         # on prend la meilleure action
         self.action = y.max(0)[1].item()
         self.ob, reward, self.done, _ = self.env.step(self.action)
@@ -285,18 +284,18 @@ class DQN_Agent(object):
             s = s.cuda()
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
-        e = self.net.forward(e).reshape(len(batch),self.n_action)
+        e = self.net.forward(e)
 
         # On récupère les Q valeurs des actions
         Q = torch.index_select(e, 1, a.long()).diag()
 
-        s = self.target.forward(s).reshape(len(batch),self.n_action)
+        s = self.target.forward(s)
         Qc = torch.max(s, 1)[0].detach()
         loss = self.criterion(Q, r + (1-f) * (self.gamma * Qc))
         loss.backward(retain_graph=False)
         self.optimizer.step()
         if(self.target_update_strategy=="freq"):
-            self.cpt_app += len(batch)
+            self.cpt_app += 1
             if(self.cpt_app>self.freq_copy):
                 self.cpt_app = 0
                 for target_param, param in zip(self.target.parameters(), self.net.parameters()):
@@ -392,15 +391,15 @@ if __name__ == '__main__':
         "gamma": 0.95,
         "max_tau": 1,
         "min_tau": 0.1,
-        "tau_decay": 0.999,
+        "tau_decay": 0.99,
         "exploration": EXPLO[0],
         "sigma": 1e-3,
         "alpha": 0.005,
         "m": 4,
         "frame_skip": 4,
         "buffer_size": 10000,
-        "batch_size": 64,
-        "freq_copy": 100,
+        "batch_size": 32,
+        "freq_copy": 1000,
         "target_update_strategy": TARGET_UPDATE[0],
         "optimizer": torch.optim.RMSprop
     }
