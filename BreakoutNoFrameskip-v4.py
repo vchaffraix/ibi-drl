@@ -208,7 +208,7 @@ class DQN_Agent(object):
         self.action = self.act(y)
         self.ob, reward, self.done, _ = self.env.step(self.action)
         s = torch.Tensor(self.ob)
-        inter = Interaction(e, self.action, s, reward, self.done)
+        inter = Interaction(e.cpu(), self.action, s.cpu(), reward, self.done)
         self.buff.append(inter)
 
         self.reward_sum += reward
@@ -280,6 +280,9 @@ class DQN_Agent(object):
         e = torch.cat(tuple(exp.e.unsqueeze(0) for exp in batch))
         a = torch.cat(tuple(torch.Tensor([exp.a]) for exp in batch))
         s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
+        if self.cuda:
+            e = e.cuda()
+            s = s.cuda()
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
         e = self.net.forward(e).reshape(len(batch),self.n_action)
