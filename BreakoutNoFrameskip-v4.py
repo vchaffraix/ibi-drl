@@ -120,8 +120,10 @@ class QModel(torch.nn.Module):
         return x
 
 class DQN_Agent(object):
-    def __init__(self, env, params, net=None):
+    def __init__(self, env, params, net=None, reward=[], loss=[]):
         self.params = params
+        self.r_sums = reward
+        self.l_means = loss
         # PARAMS
         self.gamma = params["gamma"]
         self.freq_copy = params["freq_copy"]
@@ -143,7 +145,7 @@ class DQN_Agent(object):
             self.net.load_state_dict(net)
         self.target = copy.deepcopy(self.net)
         self.optimizer = params["optimizer"](self.net.parameters(), lr=self.sigma)
-        self.criterion = torch.nn.MSELoss()
+        self.criterion = params["criterion"]()
         self.buff = Buffer(params["buffer_size"])
 
         self.env = wrappers.AtariPreprocessing(env, frame_skip=self.frame_skip, screen_size=84,grayscale_obs=True, scale_obs=True) 
@@ -174,17 +176,14 @@ class DQN_Agent(object):
             raise Exception('Stratégie d\'exploration \'{}\' inconnue.'.format(self.exploration))
 
     # reset de l'agent à chaque nouvel épisode
-    # on remet la récompense cumulée à 0 et on reset l'env
+    # on remet la récompense cumulée à 0 et on reset l'env, etc...
     def reset(self):
         self.reward_sum = 0
-        self.reward_etat = 0
+        self.loss_sum = 0
         self.cpt_app = 0
-        self.cpt_step = 0
         self.ob = self.env.reset()
         self.done = False
         self.action = self.env.action_space.sample()
-        self.frames = torch.Tensor([self.preprocessing(self.ob)]*4)
-        self.etatPrec = None
         if self.cuda:
             torch.cuda.empty_cache()
 
@@ -204,67 +203,20 @@ class DQN_Agent(object):
         e = torch.Tensor(self.ob)
         x = e.unsqueeze(0)
         y = self.net(x).flatten()
+        # Récupération de l'action selon la stratégie d'exploration
         self.action = self.act(y)
+
         self.ob, reward, self.done, _ = self.env.step(self.action)
         s = torch.Tensor(self.ob)
+        # On sauvegarde l'interaction dans la RAM même si cuda est activé
         inter = Interaction(e.cpu(), self.action, s.cpu(), reward, self.done)
         self.buff.append(inter)
-
         self.reward_sum += reward
 
         if self.cuda:
             torch.cuda.empty_cache()
 
-        # self.cpt_step += 1
-        # if(self.cpt_step%100==0):
-            # self.cpt_step = 0
-            # f, axarr = plt.subplots(2,2)
-            # axarr[0,0].imshow(etat[0], cmap = plt.get_cmap('gray'))
-            # axarr[0,1].imshow(etat[1], cmap = plt.get_cmap('gray'))
-            # axarr[1,0].imshow(etat[2], cmap = plt.get_cmap('gray'))
-            # axarr[1,1].imshow(etat[3], cmap = plt.get_cmap('gray'))
-            # plt.show()
-
-        # On skip un certain nombre de frames
-        # if(cpt_step<self.frame_skip):
-            # self.ob, reward, self.done, _ = self.env.step(self.action)
-        # else:
-            # cpt_step = 0
-
-        # cpt_step += 1
-
-        # if(len(self.frames)<self.m):
-            # self.ob, reward, self.done, _ = self.env.step(self.action)
-            # self.reward_etat += reward
-            # self.frames.append(self.preprocessing(self.ob))
-            # if self.done:
-                # # Si le groupe contient un état terminal alors qu'on a pas encore m frames,
-                # # On duplique la frame jusqu'à en avoir le bon nombre
-                # self.frames.extend([self.preprocessing(self.ob)]*(self.m - len(self.frames)))
-                # etat_ = torch.Tensor(self.frames).unsqueeze(0)
-                # inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
-                # self.buff.append(inter)
-        # else:
-            # etat_ = torch.Tensor(self.frames).unsqueeze(0)
-            # x = etat_
-            # y = self.net(x)
-            # self.action = self.act(y)
-            # self.ob, reward, self.done, _ = self.env.step(self.action)
-            # # sauvegarde de l'interraction dans le buffer
-            # if not(self.etatPrec is None):
-                # self.reward_etat += reward
-                # inter = Interaction(self.etatPrec, self.action, etat_, self.reward_etat, self.done)
-                # self.buff.append(inter)
-
-            # self.frames = [self.preprocessing(self.ob)]
-            # self.reward_etat = 0
-            # self.etatPrec = etat_
-
-        # self.reward_sum += reward
-        # if self.cuda:
-            # torch.cuda.empty_cache()
-
-
+    # Ici l'agent choisi toujours la meilleure action
     def step_test(self):
         x = torch.Tensor(self.ob).unsqueeze(0)
         y = self.net.forward(x).flatten()
@@ -274,28 +226,39 @@ class DQN_Agent(object):
         self.reward_sum += reward
 
     def learn(self):
+        # Reset du grad
         self.optimizer.zero_grad()
+        # Récupération du minibatch
         batch = self.buff.sample(self.batch_size)
+        # On récupère tous les états, actions, reward,... du minibatch pour les mettre dans un tenseur
         e = torch.cat(tuple(exp.e.unsqueeze(0) for exp in batch))
         a = torch.cat(tuple(torch.Tensor([exp.a]) for exp in batch))
         s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
+        # Les frames sont stockées dans la RAM pour économiser la VRAM
         if self.cuda:
             e = e.cuda()
             s = s.cuda()
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
+
+        # On calcule les Q valeurs des toutes les actions pour chaque experience du minibatch
         e = self.net.forward(e)
-
-        # On récupère les Q valeurs des actions
+        # On récupère les Q valeurs des actions de l'experience
         Q = torch.index_select(e, 1, a.long()).diag()
-
+        # On calcule les Q valeurs de toutes les actions de l'état d'arrivée
         s = self.target.forward(s)
+        # On récupère les meilleures actions
         Qc = torch.max(s, 1)[0].detach()
+        # Equation de Bellman
         loss = self.criterion(Q, r + (1-f) * (self.gamma * Qc))
+        self.loss_sum += loss.item()
+        # Rétro propagation
         loss.backward(retain_graph=False)
         self.optimizer.step()
+
+        # Mise à jour du target network
+        self.cpt_app += 1
         if(self.target_update_strategy=="freq"):
-            self.cpt_app += 1
             if(self.cpt_app>self.freq_copy):
                 self.cpt_app = 0
                 for target_param, param in zip(self.target.parameters(), self.net.parameters()):
@@ -307,40 +270,17 @@ class DQN_Agent(object):
             raise Exception('Stratégie de mise à jour de target \'{}\' inconnue.'.format(self.target_update_strategy))
 
         if self.cuda:
-            #print("toto")
-            #print(torch.cuda.memory_allocated())
-            #print(torch.cuda.memory_cached())
             torch.cuda.empty_cache()
 
-        # for exp in batch:
-            # self.optimizer.zero_grad()
-            # mse = torch.nn.SmoothL1Loss()
-            # if(not(exp.f)):
-                # e = exp.e
-                # s = exp.s
-
-                # Q = self.net.forward(e)[exp.a]
-                # Qc = self.target.forward(s)
-
-                # loss = mse(Q, (exp.r + self.gamma * Qc.max()))
-                # loss.backward()
-                # self.optimizer.step()
-            # else:
-                # e = exp.e
-                # Q = self.net.forward(e)[exp.a]
-                # loss = (Q - exp.r).pow(2) 
-                # loss.backward()
-                # self.optimizer.step()
-                
-
 def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, save_name=None):
-    r_sums = []
-    cpt_save = 0
     if save_name is None:
         save_name="auto"
+    # Début de l'épisode
     for i in tqdm(range(episode_count)):
-        if(save and i%save_rate==0 and i!=0):
+        # Sauvegarde auto
+        if(save and i%save_rate==0 and i!=0 and training):
             saveModel(agent, "autosave/"+save_name+"_episode"+str(i))
+
         agent.reset()
         while True:
             if training:
@@ -350,15 +290,23 @@ def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, sa
                 agent.step_test()
             if agent.done:
                 break
+        # Decay de tau / epsilon
         agent.tau = agent.min_tau + (agent.tau-agent.min_tau)*agent.tau_decay
-        r_sums.append(agent.reward_sum)
-    return r_sums
+        agent.r_sums.append(agent.reward_sum)
+
+        # Dans la phase de test la loss n'est pas importante
+        if not(training):
+            agent.l_means.append(-1)
+        else:
+            agent.l_means.append(agent.loss_sum/agent.cpt_app)
+    return agent.r_sums, agent.l_means
 
 def saveModel(agent, name):
-    # agent.buff.clear()
     state = {
         "model":agent.net.state_dict(),
-        "params": agent.params
+        "params": agent.params,
+        "reward": agent.r_sums,
+        "loss": agent.l_means
     }
     logger.info("Saving model : " + name +".pt")
     torch.save(state, name+'.pt')
@@ -375,20 +323,16 @@ if __name__ == '__main__':
     logger.set_level(logger.INFO)
     env = gym.make("BreakoutNoFrameskip-v4")
 
-    
-
-    # You provide the directory to write to (can be an existing
-    # directory, including one with existing data -- all monitor files
-    # will be namespaced). You can also dump to a tempdir if you'd
-    # like: tempfile.mkdtemp().
+    # Monitor gym pour la vidéo
     outdir = '/tmp/random-agent-results'
     env = wrappers.Monitor(env, directory=outdir, force=True)
     env.seed(0)
 
+    # hyperparamètres
     EXPLO = ["greedy", "boltzmann"]
     TARGET_UPDATE = ["freq", "polyak"]
     PARAMS = {
-        "gamma": 0.95,
+        "gamma": 0.8,
         "max_tau": 1,
         "min_tau": 0.1,
         "tau_decay": 0.99,
@@ -398,29 +342,38 @@ if __name__ == '__main__':
         "m": 4,
         "frame_skip": 4,
         "buffer_size": 10000,
-        "batch_size": 32,
+        "batch_size": 20,
         "freq_copy": 1000,
-        "target_update_strategy": TARGET_UPDATE[0],
-        "optimizer": torch.optim.RMSprop
+        "target_update_strategy": TARGET_UPDATE[1],
+        "optimizer": torch.optim.RMSprop,
+        "criterion": torch.nn.MSELoss
     }
 
+    # Si cuda activé en paramètre
     if args.cuda:
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
+
+    # Si on a passé un modèle en paramètre
     if args.agent!=None:
-        logger.info("Loading model : " + args.agent +".pt")
-        state = torch.load(args.agent+'.pt')
-        agent_dqn = DQN_Agent(env, state["params"], state["model"])
+        logger.info("Loading model : " + args.agent)
+        state = torch.load(args.agent)
+        agent_dqn = DQN_Agent(env, state["params"], state["model"], reward=state["reward"], loss=state["loss"])
     else:
         agent_dqn = DQN_Agent(env, PARAMS)
 
+    # Si cuda activé en paramètre
     if args.cuda:
         agent_dqn.cuda = True
         agent_dqn.net = agent_dqn.net.cuda()
+        agent_dqn.target = agent_dqn.target.cuda()
 
+    # On récupère le nombre d'épisode à lancer
     episode_learn = args.learn
     episode_test = args.test
+
+    # Sauvegarde auto
     autosave = False
     if args.autosave != None:
         autosave = True
@@ -428,17 +381,25 @@ if __name__ == '__main__':
             os.makedirs('autosave')
 
     # Début d'une époque de train
-    reward_sums = startEpoch(agent=agent_dqn, episode_count=episode_learn, training=True, save=(args.autosave!=None), save_rate=args.autosave, save_name=args.save)
-    reward_sums += startEpoch(agent=agent_dqn, episode_count=episode_test, training=False)
+    startEpoch(agent=agent_dqn, episode_count=episode_learn, training=True, save=(args.autosave!=None), save_rate=args.autosave, save_name=args.save)
+    # Époque de test
+    startEpoch(agent=agent_dqn, episode_count=episode_test, training=False)
 
+    # Sauvegarde du modèle
     if args.save:
         saveModel(agent_dqn, args.save)
-    fig_rewards = plt.figure()
-    fig_rewards.suptitle('Récompense cumulée par épisode', fontsize=11)
-    plt.xlabel('Episode N°', fontsize=9) 
-    plt.ylabel('Récompense cumulée', fontsize=9)
-    plt.plot(reward_sums)
+
+    # Affichage des courbes de reward et de loss
+    fig, (fig_rewards, fig_loss) = plt.subplots(1,2)
+    fig_rewards.set_title('Récompense cumulée par épisode', fontsize=11)
+    fig_rewards.set_xlabel('Episode N°', fontsize=9)
+    fig_rewards.set_ylabel('Récompense cumulée', fontsize=9)
+    fig_rewards.plot(agent_dqn.r_sums)
+    fig_loss.set_title('Loss moyenne par épisode', fontsize=11)
+    fig_loss.set_xlabel('Episode N°', fontsize=9)
+    fig_loss.set_ylabel('MSE Loss', fontsize=9)
+    fig_loss.plot(agent_dqn.l_means)
     plt.show()
 
-    # Close the env and write monitor result info to disk
+    # Fermeture de l'env gym
     env.close()
