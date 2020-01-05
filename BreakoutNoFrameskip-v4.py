@@ -12,10 +12,8 @@ import pickle
 from collections import deque
 import gym
 from gym import wrappers, logger
-
 import matplotlib.pyplot as plt
-
-import GPUtil
+import os
 
 
 # Structure d'une interaction :
@@ -124,6 +122,7 @@ class QModel(torch.nn.Module):
 
 class DQN_Agent(object):
     def __init__(self, env, params, net=None):
+        self.params = params
         # PARAMS
         self.gamma = params["gamma"]
         self.freq_copy = params["freq_copy"]
@@ -284,7 +283,7 @@ class DQN_Agent(object):
         s = torch.cat(tuple(exp.s.unsqueeze(0) for exp in batch))
         r = torch.cat(tuple(torch.Tensor([exp.r]) for exp in batch))
         f = torch.cat(tuple(torch.Tensor([exp.f]) for exp in batch))
-        e = self.net.forward(e).reshape(self.batch_size,self.n_action)
+        e = self.net.forward(e).reshape(len(batch),self.n_action)
 
         # On récupère les Q valeurs des actions
         Q = torch.index_select(e, 1, a.long()).diag()
@@ -333,9 +332,15 @@ class DQN_Agent(object):
                 # self.optimizer.step()
                 
 
-def startEpoch(agent, episode_count, training=True):
+def startEpoch(agent, episode_count, training=True, save=False, save_rate=50, save_name="auto"):
     r_sums = []
+    cpt_save = 0
+    if save_name is None:
+        save_name="auto"
     for i in tqdm(range(episode_count)):
+        if(save and i%save_rate==0):
+            cpt_save += 1
+            saveModel(agent, "autosave/"+save_name+"_episode"+str(i))
         agent.reset()
         while True:
             if training:
@@ -348,17 +353,29 @@ def startEpoch(agent, episode_count, training=True):
         r_sums.append(agent.reward_sum)
     return r_sums
 
+def saveModel(agent, name):
+    agent.buff.clear()
+    state = {
+        "model":agent.net.state_dict(),
+        "params": agent.params
+    }
+    logger.info("Saving model : " + name +".pt")
+    torch.save(state, name+'.pt')
+    logger.info("Model saved : " + name +".pt")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=None)
     parser.add_argument("agent", nargs='?', default=None, help='Fichier d\'un agent déjà entraîné')
     parser.add_argument("--cuda", action="store_true", help="Utilise cuda pour l\'entrainement")
+    parser.add_argument("--autosave", action="store", default=None, type=int, help="Active la sauvegarde auto")
     parser.add_argument("-s", "--save", action="store", help="Sauvegarde l\'agent après entraînement")
     parser.add_argument("-l", "--learn", type=int, action="store", default=500, help="Nombre d\'épisodes d\'apprentissage.")
     parser.add_argument("-t", "--test", type=int, action="store", default=0, help="Nombre d\'épisodes de test")
     args = parser.parse_args()
     logger.set_level(logger.INFO)
     env = gym.make("BreakoutNoFrameskip-v4")
+
+    
 
     # You provide the directory to write to (can be an existing
     # directory, including one with existing data -- all monitor files
@@ -392,7 +409,10 @@ if __name__ == '__main__':
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.enabled = True
     if args.agent!=None:
-        agent_dqn = DQN_Agent(env, PARAMS, torch.load(args.agent+'.pt'))
+        logger.info("Loading model : " + args.agent +".pt")
+        state = torch.load(args.agent+'.pt')
+        agent_dqn = DQN_Agent(env, state["params"], state["model"])
+        logger.info("Model loaded : " + args.agent +".pt")
     else:
         agent_dqn = DQN_Agent(env, PARAMS)
 
@@ -402,14 +422,18 @@ if __name__ == '__main__':
 
     episode_learn = args.learn
     episode_test = args.test
+    autosave = False
+    if args.autosave != None:
+        autosave = True
+        if not os.path.exists('autosave'):
+            os.makedirs('autosave')
+
     # Début d'une époque de train
-    reward_sums = startEpoch(agent=agent_dqn, episode_count=episode_learn, training=True)
+    reward_sums = startEpoch(agent=agent_dqn, episode_count=episode_learn, training=True, save=(args.autosave!=None), save_rate=args.autosave, save_name=args.save)
     reward_sums += startEpoch(agent=agent_dqn, episode_count=episode_test, training=False)
 
     if args.save:
-        agent_dqn.buff.clear()
-        torch.save(agent_dqn.net.state_dict(), args.save+'.pt')
-
+        saveModel(agent_dqn, args.save)
     fig_rewards = plt.figure()
     fig_rewards.suptitle('Récompense cumulée par épisode', fontsize=11)
     plt.xlabel('Episode N°', fontsize=9) 
