@@ -363,7 +363,6 @@ def saveModel(agent, name):
     }
     logger.info("Saving model : " + name +".pt")
     torch.save(state, name+'.pt')
-    logger.info("Model saved : " + name +".pt")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=None)
@@ -414,7 +413,6 @@ if __name__ == '__main__':
         logger.info("Loading model : " + args.agent +".pt")
         state = torch.load(args.agent+'.pt')
         agent_dqn = DQN_Agent(env, state["params"], state["model"])
-        logger.info("Model loaded : " + args.agent +".pt")
     else:
         agent_dqn = DQN_Agent(env, PARAMS)
 
