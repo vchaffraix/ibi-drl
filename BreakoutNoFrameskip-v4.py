@@ -390,7 +390,7 @@ if __name__ == '__main__':
         "gamma": 0.95,
         "max_tau": 1,
         "min_tau": 0.1,
-        "tau_decay": 0.99,
+        "tau_decay": 0.999,
         "exploration": EXPLO[0],
         "sigma": 1e-3,
         "alpha": 0.005,
